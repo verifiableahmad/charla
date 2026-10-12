@@ -248,7 +248,7 @@ async function saveKey(key, val) {
   try { localStorage.setItem("charla:" + key, JSON.stringify(val)); } catch (e) { console.error("save failed", e); }
 }
 
-function AppInner() {
+function AppInner({ user, logout }) {
   const [tab, setTab] = useState("hablar");
   const [words, setWords] = useState([]);
   const [reflections, setReflections] = useState([]);
@@ -357,6 +357,9 @@ function AppInner() {
         <div className="brand">Charla<span className="dot">.</span></div>
         <div className="tag"><TapPhrase es="habla primero, teclea después" en="speak first, type later" /></div>
         <button className={"enToggle " + (englishMode ? "on" : "")} onClick={flashEnglish} title={t("Ver todo en inglés por 5 segundos", "Show everything in English for 5 seconds")}>EN</button>
+        <button className="profileChip" onClick={logout} title={t("Cerrar sesión", "Sign out")}>
+          {user.picture ? <img src={user.picture} alt="" className="profileAvatar" /> : <span className="profileAvatar profileAvatarFallback">{(user.name || user.email)[0].toUpperCase()}</span>}
+        </button>
       </header>
       {showPrivacy && (
         <div className="privacyNote">
@@ -383,6 +386,32 @@ function AppInner() {
   );
 }
 
+function GoogleIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 18 18">
+      <path fill="#4285F4" d="M17.64 9.2c0-.637-.057-1.251-.164-1.84H9v3.481h4.844c-.209 1.125-.843 2.078-1.796 2.717v2.258h2.908c1.702-1.567 2.684-3.874 2.684-6.615z" />
+      <path fill="#34A853" d="M9 18c2.43 0 4.467-.806 5.956-2.18l-2.908-2.259c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332C2.438 15.983 5.482 18 9 18z" />
+      <path fill="#FBBC05" d="M3.964 10.71A5.41 5.41 0 0 1 3.682 9c0-.593.102-1.17.282-1.71V4.958H.957A8.996 8.996 0 0 0 0 9c0 1.452.348 2.827.957 4.042l3.007-2.332z" />
+      <path fill="#EA4335" d="M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.891 11.426 0 9 0 5.482 0 2.438 2.017.957 4.958L3.964 7.29C4.672 5.163 6.656 3.58 9 3.58z" />
+    </svg>
+  );
+}
+
+function LoginScreen() {
+  return (
+    <div className="app">
+      <style>{css}</style>
+      <div className="loginWrap">
+        <div className="loginCard">
+          <div className="brand">Charla<span className="dot">.</span></div>
+          <p className="sub">Habla de verdad. Sign in to save your progress and keep it across devices.</p>
+          <a className="googleBtn" href="/api/auth/google"><GoogleIcon /> Sign in with Google</a>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [englishMode, setEnglishMode] = useState(false);
   const timerRef = useRef(null);
@@ -392,9 +421,30 @@ export default function App() {
     timerRef.current = setTimeout(() => setEnglishMode(false), 5000);
   }, []);
   useEffect(() => () => clearTimeout(timerRef.current), []);
+
+  const [user, setUser] = useState(null);
+  const [authChecked, setAuthChecked] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch("/api/auth/me");
+        if (res.ok) setUser((await res.json()).user);
+      } catch {}
+      setAuthChecked(true);
+    })();
+  }, []);
+
+  const logout = useCallback(async () => {
+    try { await fetch("/api/auth/logout", { method: "POST" }); } catch {}
+    setUser(null);
+  }, []);
+
   return (
     <UIContext.Provider value={{ en: englishMode, flash }}>
-      <AppInner />
+      {!authChecked ? <div className="loading">Cargando…</div> :
+        !user ? <LoginScreen /> :
+        <AppInner user={user} logout={logout} />}
     </UIContext.Provider>
   );
 }
@@ -1285,6 +1335,16 @@ const css = `
 .tag { font-size: 11px; color: ${T.dim}; letter-spacing: 0.04em; flex: 1; }
 .enToggle { margin-left: auto; border: 1.5px solid ${T.line}; background: #fff; color: ${T.dim}; font-size: 11px; font-weight: 700; letter-spacing: .04em; border-radius: 99px; padding: 4px 10px; cursor: pointer; }
 .enToggle.on { background: ${T.ink}; color: #fff; border-color: ${T.ink}; }
+.profileChip { border: none; background: none; padding: 0; cursor: pointer; border-radius: 50%; }
+.profileAvatar { width: 28px; height: 28px; border-radius: 50%; display: block; object-fit: cover; }
+.profileAvatarFallback { background: ${T.ink}; color: #fff; font-size: 13px; font-weight: 700; display: flex; align-items: center; justify-content: center; }
+
+.loginWrap { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; }
+.loginCard { max-width: 360px; text-align: center; background: #fff; border: 1.5px solid ${T.line}; border-radius: 20px; padding: 32px 28px; box-shadow: 0 2px 0 ${T.line}; }
+.loginCard .brand { font-size: 30px; margin-bottom: 10px; }
+.loginCard .sub { margin-bottom: 20px; }
+.googleBtn { display: flex; align-items: center; justify-content: center; gap: 10px; border: 1.5px solid ${T.line}; border-radius: 99px; padding: 12px 20px; font-size: 14.5px; font-weight: 600; color: ${T.ink}; text-decoration: none; background: #fff; }
+.googleBtn:active { background: ${T.sand}; }
 .privacyNote { display: flex; align-items: flex-start; gap: 10px; background: ${T.sand}; margin: 0 20px 10px; border-radius: 12px; padding: 9px 12px; font-size: 12px; line-height: 1.4; color: ${T.ink}; }
 .privacyClose { background: none; border: none; color: ${T.dim}; font-size: 12px; cursor: pointer; padding: 0; flex-shrink: 0; }
 .main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
