@@ -113,7 +113,12 @@ function speak(text, rate = 0.95, onEnd) {
     u.lang = esVoice?.lang || "es-MX";
     if (esVoice) u.voice = esVoice;
     u.rate = rate;
-    if (onEnd) u.onend = onEnd;
+    u.onend = () => {
+      // Chrome leaves the TTS audio stream open for a beat after onend, which makes the OS
+      // emit an audible pop when it's finally torn down — force an immediate close instead.
+      speechSynthesis.cancel();
+      onEnd?.();
+    };
     speechSynthesis.speak(u);
   } catch {}
 }
