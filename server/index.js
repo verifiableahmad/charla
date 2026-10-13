@@ -4,6 +4,7 @@ import cors from "cors";
 import path from "path";
 import { fileURLToPath } from "url";
 import authRouter, { getSessionUser } from "./auth.js";
+import dataRouter from "./data.js";
 import { ensureSchema } from "./db.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -24,6 +25,7 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: "15mb" }));
 app.use("/api/auth", authRouter);
+app.use("/api/data", dataRouter);
 
 // Client sends Anthropic-shaped { role, content } messages (content is a string,
 // or an array of {type:"text", text} / {type:"image", source:{media_type, data}} blocks).

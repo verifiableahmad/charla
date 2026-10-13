@@ -240,12 +240,52 @@ async function askAI(messages) {
   return (data.text || "").replace(/```json|```/g, "").trim();
 }
 
-async function loadKey(key, fallback) {
+// Device-local only — for state that shouldn't follow the account across devices
+// (the in-progress Hablar session, the dismissed-privacy-note flag).
+async function loadLocal(key, fallback) {
   try { const raw = localStorage.getItem("charla:" + key); return raw != null ? JSON.parse(raw) : fallback; }
   catch { return fallback; }
 }
-async function saveKey(key, val) {
+async function saveLocal(key, val) {
   try { localStorage.setItem("charla:" + key, JSON.stringify(val)); } catch (e) { console.error("save failed", e); }
+}
+
+// Account-scoped, server-backed — the deck, reflections, custom scenes, glossary, and
+// Mensajes threads all live here now so they follow the signed-in user across devices.
+async function loadKey(key, fallback) {
+  try {
+    const res = await fetch(`/api/data/${key}`);
+    if (!res.ok) return fallback;
+    const data = await res.json();
+    return data.value ?? fallback;
+  } catch { return fallback; }
+}
+async function saveKey(key, val) {
+  try {
+    await fetch(`/api/data/${key}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ value: val }),
+    });
+  } catch (e) { console.error("save failed", e); }
+}
+
+const SYNCED_KEYS = ["palabras", "reflexiones", "escenas", "glosario", "hilos"];
+
+// Runs once right after a successful login: anything already saved locally from
+// anonymous use gets uploaded to the new account instead of being silently dropped.
+// Skips any key the server already has data for, so it's safe to call on every login.
+async function migrateLocalDataToServer() {
+  if (localStorage.getItem("charla:migrated") === "1") return;
+  for (const key of SYNCED_KEYS) {
+    const local = await loadLocal(key, null);
+    if (local == null) continue;
+    try {
+      const res = await fetch(`/api/data/${key}`);
+      if (res.status === 404) await saveKey(key, local);
+    } catch {}
+  }
+  localStorage.setItem("charla:migrated", "1");
 }
 
 function AppInner({ user, logout }) {
@@ -257,6 +297,7 @@ function AppInner({ user, logout }) {
   const [loaded, setLoaded] = useState(false);
   const [showPrivacy, setShowPrivacy] = useState(() => localStorage.getItem("charla:privacyNoteDismissed") !== "1");
   const [pendingOpenId, setPendingOpenId] = useState(null);
+  const [showProfileMenu, setShowProfileMenu] = useState(false);
   const [threads, setThreads] = useState({});
   const threadsRef = useRef({});
   const { en: englishMode, flash: flashEnglish } = useUI();
@@ -357,9 +398,18 @@ function AppInner({ user, logout }) {
         <div className="brand">Charla<span className="dot">.</span></div>
         <div className="tag"><TapPhrase es="habla primero, teclea después" en="speak first, type later" /></div>
         <button className={"enToggle " + (englishMode ? "on" : "")} onClick={flashEnglish} title={t("Ver todo en inglés por 5 segundos", "Show everything in English for 5 seconds")}>EN</button>
-        <button className="profileChip" onClick={logout} title={t("Cerrar sesión", "Sign out")}>
-          {user.picture ? <img src={user.picture} alt="" className="profileAvatar" /> : <span className="profileAvatar profileAvatarFallback">{(user.name || user.email)[0].toUpperCase()}</span>}
-        </button>
+        <div className="profileWrap">
+          <button className="profileChip" onClick={() => setShowProfileMenu(s => !s)} title={user.name || user.email}>
+            {user.picture ? <img src={user.picture} alt="" className="profileAvatar" /> : <span className="profileAvatar profileAvatarFallback">{(user.name || user.email)[0].toUpperCase()}</span>}
+          </button>
+          {showProfileMenu && (
+            <div className="profileMenu">
+              <div className="profileName">{user.name || t("Sin nombre", "No name")}</div>
+              <div className="profileEmail dim">{user.email}</div>
+              <button className="profileLogout" onClick={() => { setShowProfileMenu(false); logout(); }}>{t("Cerrar sesión", "Sign out")}</button>
+            </div>
+          )}
+        </div>
       </header>
       {showPrivacy && (
         <div className="privacyNote">
@@ -429,7 +479,10 @@ export default function App() {
     (async () => {
       try {
         const res = await fetch("/api/auth/me");
-        if (res.ok) setUser((await res.json()).user);
+        if (res.ok) {
+          setUser((await res.json()).user);
+          await migrateLocalDataToServer();
+        }
       } catch {}
       setAuthChecked(true);
     })();
@@ -474,7 +527,7 @@ function Hablar({ words, persistWords, persistReflections, reflections, goReflec
 
   // Keep the active conversation durable across a refresh, a tab switch, or an accidental close.
   useEffect(() => {
-    saveKey("sesionActiva", scenario ? { scenario, msgs, apiHistory } : null);
+    saveLocal("sesionActiva", scenario ? { scenario, msgs, apiHistory } : null);
   }, [scenario, msgs, apiHistory]);
 
   const send = useCallback(async (text) => {
@@ -1335,9 +1388,14 @@ const css = `
 .tag { font-size: 11px; color: ${T.dim}; letter-spacing: 0.04em; flex: 1; }
 .enToggle { margin-left: auto; border: 1.5px solid ${T.line}; background: #fff; color: ${T.dim}; font-size: 11px; font-weight: 700; letter-spacing: .04em; border-radius: 99px; padding: 4px 10px; cursor: pointer; }
 .enToggle.on { background: ${T.ink}; color: #fff; border-color: ${T.ink}; }
+.profileWrap { position: relative; }
 .profileChip { border: none; background: none; padding: 0; cursor: pointer; border-radius: 50%; }
 .profileAvatar { width: 28px; height: 28px; border-radius: 50%; display: block; object-fit: cover; }
 .profileAvatarFallback { background: ${T.ink}; color: #fff; font-size: 13px; font-weight: 700; display: flex; align-items: center; justify-content: center; }
+.profileMenu { position: absolute; top: 36px; right: 0; background: #fff; border: 1.5px solid ${T.line}; border-radius: 14px; padding: 12px 14px; min-width: 180px; box-shadow: 0 4px 16px #0002; z-index: 10; text-align: left; }
+.profileName { font-weight: 700; font-size: 13.5px; }
+.profileEmail { font-size: 12px; margin-top: 1px; margin-bottom: 10px; word-break: break-all; }
+.profileLogout { width: 100%; border: 1.5px solid ${T.line}; background: #fff; border-radius: 99px; padding: 7px 0; font-size: 12.5px; font-weight: 700; color: ${T.rosa}; cursor: pointer; }
 
 .loginWrap { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; }
 .loginCard { max-width: 360px; text-align: center; background: #fff; border: 1.5px solid ${T.line}; border-radius: 20px; padding: 32px 28px; box-shadow: 0 2px 0 ${T.line}; }
