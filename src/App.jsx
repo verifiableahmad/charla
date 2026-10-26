@@ -395,7 +395,7 @@ function AppInner({ user, logout }) {
     <div className="app">
       <style>{css}</style>
       <header className="top">
-        <div className="brand">Charla<span className="dot">.</span></div>
+        <div className="brand">Charla<BubbleDot /></div>
         <div className="tag"><TapPhrase es="habla primero, teclea después" en="speak first, type later" /></div>
         <button className={"enToggle " + (englishMode ? "on" : "")} onClick={flashEnglish} title={t("Ver todo en inglés por 5 segundos", "Show everything in English for 5 seconds")}>EN</button>
         <div className="profileWrap">
@@ -436,6 +436,16 @@ function AppInner({ user, logout }) {
   );
 }
 
+/* Brand mark: the period after "Charla", drawn as a speech bubble */
+const BUBBLE_PATH = "M52 6A40 40 0 1 1 34.5 82L14 94L21.4 71.7A40 40 0 0 1 52 6Z";
+function BubbleDot() {
+  return (
+    <svg className="dot" viewBox="0 0 100 100" aria-hidden="true">
+      <path fill="currentColor" d={BUBBLE_PATH} />
+    </svg>
+  );
+}
+
 function GoogleIcon() {
   return (
     <svg width="18" height="18" viewBox="0 0 18 18">
@@ -453,7 +463,7 @@ function LoginScreen() {
       <style>{css}</style>
       <div className="loginWrap">
         <div className="loginCard">
-          <div className="brand">Charla<span className="dot">.</span></div>
+          <div className="brand">Charla<BubbleDot /></div>
           <p className="sub">Habla de verdad. Sign in to save your progress and keep it across devices.</p>
           <a className="googleBtn" href="/api/auth/google"><GoogleIcon /> Sign in with Google</a>
         </div>
@@ -1384,7 +1394,7 @@ const css = `
 .app { min-height: 100vh; background: ${T.paper}; color: ${T.ink}; font-family: -apple-system, 'Segoe UI', Roboto, sans-serif; display: flex; flex-direction: column; max-width: 560px; margin: 0 auto; }
 .top { padding: 14px 20px 8px; display: flex; align-items: baseline; gap: 10px; }
 .brand { font-family: 'Fraunces', Georgia, serif; font-size: 26px; font-weight: 600; letter-spacing: -0.5px; }
-.dot { color: ${T.rosa}; }
+.dot { color: ${T.rosa}; width: 0.3em; height: 0.3em; margin-left: 0.06em; }
 .tag { font-size: 11px; color: ${T.dim}; letter-spacing: 0.04em; flex: 1; }
 .enToggle { margin-left: auto; border: 1.5px solid ${T.line}; background: #fff; color: ${T.dim}; font-size: 11px; font-weight: 700; letter-spacing: .04em; border-radius: 99px; padding: 4px 10px; cursor: pointer; }
 .enToggle.on { background: ${T.ink}; color: #fff; border-color: ${T.ink}; }
