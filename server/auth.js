@@ -27,7 +27,7 @@ function setCookie(res, name, value, { maxAge, expirePast } = {}) {
   if (process.env.NODE_ENV === "production") parts.push("Secure");
   if (expirePast) parts.push("Expires=Thu, 01 Jan 1970 00:00:00 GMT");
   else if (maxAge != null) parts.push(`Max-Age=${maxAge}`);
-  res.setHeader("Set-Cookie", parts.join("; "));
+  res.append("Set-Cookie", parts.join("; ")); // append, so multiple cookies in one response don't overwrite each other
 }
 
 export async function getSessionUser(req) {

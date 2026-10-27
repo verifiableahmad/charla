@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useContext, createContext } from "react";
+import { speak, hush, setCharacterVoice, setVoiceProvider, liveSupported, LiveSession } from "./voice.js";
 
 /* ---------- Charla · audio-first ----------
    Palette: ink navy, rosa mexicano, lime leaf, sun ivory
@@ -12,12 +13,15 @@ const T = {
 };
 
 const SCENARIOS = [
-  { id: "mercado", emoji: "🍊", title: "En el mercado", titleEn: "At the market", goal: "Buy fruit and haggle a little", who: "Doña Rosa, a fruit vendor in Oaxaca", opener: "¡Buenos días! Tengo mangos muy dulces hoy. ¿Qué buscas?", hint: "Good morning! I have very sweet mangoes today. What are you looking for?" },
-  { id: "cafe", emoji: "☕", title: "Café con un amigo nuevo", titleEn: "Coffee with a new friend", goal: "Talk about your real life — work, family, dreams", who: "Mateo, a friendly porteño from Buenos Aires", opener: "¡Hola! Qué bueno verte. Cuéntame, ¿qué haces en tu vida? ¿Trabajas o estudias?", hint: "Hi! So good to see you. Tell me, what do you do in life? Do you work or study?" },
-  { id: "perdido", emoji: "🗺️", title: "Perdido en Madrid", titleEn: "Lost in Madrid", goal: "Ask for directions and help", who: "Lucía, a madrileña waiting for the bus", opener: "Perdona, ¿estás perdido? ¿A dónde quieres ir?", hint: "Excuse me, are you lost? Where do you want to go?" },
-  { id: "dia", emoji: "🌙", title: "¿Cómo fue tu día?", titleEn: "How was your day?", goal: "Tell the story of your actual day", who: "Camila, your conversation buddy", opener: "¡Hola! Quiero saber todo. ¿Cómo fue tu día hoy? ¿Bueno o difícil?", hint: "Hi! I want to know everything. How was your day today? Good or hard?" },
-  { id: "finde", emoji: "🎉", title: "Planes del fin de semana", titleEn: "Weekend plans", goal: "Make real weekend plans together", who: "Diego, who always has plans", opener: "¡Oye! ¿Qué haces este fin de semana? ¿Tienes planes?", hint: "Hey! What are you doing this weekend? Do you have plans?" },
+  { id: "mercado", voice: "female", emoji: "🍊", title: "En el mercado", titleEn: "At the market", goal: "Buy fruit and haggle a little", who: "Doña Rosa, a fruit vendor in Oaxaca", opener: "¡Buenos días! Tengo mangos muy dulces hoy. ¿Qué buscas?", hint: "Good morning! I have very sweet mangoes today. What are you looking for?" },
+  { id: "cafe", voice: "male", emoji: "☕", title: "Café con un amigo nuevo", titleEn: "Coffee with a new friend", goal: "Talk about your real life — work, family, dreams", who: "Mateo, a friendly porteño from Buenos Aires", opener: "¡Hola! Qué bueno verte. Cuéntame, ¿qué haces en tu vida? ¿Trabajas o estudias?", hint: "Hi! So good to see you. Tell me, what do you do in life? Do you work or study?" },
+  { id: "perdido", voice: "female", emoji: "🗺️", title: "Perdido en Madrid", titleEn: "Lost in Madrid", goal: "Ask for directions and help", who: "Lucía, a madrileña waiting for the bus", opener: "Perdona, ¿estás perdido? ¿A dónde quieres ir?", hint: "Excuse me, are you lost? Where do you want to go?" },
+  { id: "dia", voice: "female", emoji: "🌙", title: "¿Cómo fue tu día?", titleEn: "How was your day?", goal: "Tell the story of your actual day", who: "Camila, your conversation buddy", opener: "¡Hola! Quiero saber todo. ¿Cómo fue tu día hoy? ¿Bueno o difícil?", hint: "Hi! I want to know everything. How was your day today? Good or hard?" },
+  { id: "finde", voice: "male", emoji: "🎉", title: "Planes del fin de semana", titleEn: "Weekend plans", goal: "Make real weekend plans together", who: "Diego, who always has plans", opener: "¡Oye! ¿Qué haces este fin de semana? ¿Tienes planes?", hint: "Hey! What are you doing this weekend? Do you have plans?" },
 ];
+
+// Characters carry a voice gender; Gemini's prebuilt voices supply the actual voice.
+const voiceFor = (character) => (character?.voice === "male" ? "Puck" : "Kore");
 
 const dayMs = 86400000;
 const strip = s => s.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[¿?¡!.,"“”]/g, "").trim();
@@ -88,41 +92,8 @@ function TapText({ text, gloss, lookup, showAll }) {
   );
 }
 
-/* ---------- Voice engine (TTS + STT) ---------- */
+/* ---------- Voice input (browser speech recognition) — speech output lives in voice.js ---------- */
 const SR = typeof window !== "undefined" && (window.SpeechRecognition || window.webkitSpeechRecognition);
-let esVoice = null;
-function pickVoice() {
-  try {
-    const es = speechSynthesis.getVoices().filter(v => v.lang.toLowerCase().startsWith("es"));
-    // Network voices (Chrome's "Google español", Edge's "Natural" voices) sound far more natural
-    // than the default offline OS voice that speechSynthesis otherwise falls back to.
-    const byQuality = (v) => (/google/i.test(v.name) ? 2 : /natural|neural|enhanced|premium/i.test(v.name) ? 1 : 0);
-    const byRegion = (v) => (/es[-_](MX|US|419)/i.test(v.lang) ? 1 : 0);
-    esVoice = es.sort((a, b) => (byQuality(b) - byQuality(a)) || (byRegion(b) - byRegion(a)))[0] || null;
-  } catch {}
-}
-if (typeof speechSynthesis !== "undefined") {
-  pickVoice();
-  speechSynthesis.onvoiceschanged = pickVoice;
-}
-function speak(text, rate = 0.95, onEnd) {
-  try {
-    if (!esVoice) pickVoice(); // voices sometimes become available before onvoiceschanged fires
-    speechSynthesis.cancel();
-    const u = new SpeechSynthesisUtterance(text);
-    u.lang = esVoice?.lang || "es-MX";
-    if (esVoice) u.voice = esVoice;
-    u.rate = rate;
-    u.onend = () => {
-      // Chrome leaves the TTS audio stream open for a beat after onend, which makes the OS
-      // emit an audible pop when it's finally torn down — force an immediate close instead.
-      speechSynthesis.cancel();
-      onEnd?.();
-    };
-    speechSynthesis.speak(u);
-  } catch {}
-}
-const hush = () => { try { speechSynthesis.cancel(); } catch {} };
 
 /* Push-to-talk hook: tap to start, tap to stop (or auto-stop on silence) */
 function useMic(onFinal) {
@@ -202,13 +173,41 @@ Respond ONLY with JSON, no markdown fences:
 The "gloss" must cover every word in "reply" (and in any example sentences), so a pure beginner can tap any word to see its meaning.`;
 }
 
+// Live (real-time voice) version: the model speaks its reply, so no JSON — the hint, glossary and
+// correction come from a separate annotationPrompt() call in the background. It's rebuilt on every (re)connect, so it
+// carries the conversation so far.
+function buildLivePrompt(sc, msgs) {
+  const transcript = msgs.filter(m => !m.error && m.es).map(m => (m.role === "me" ? "Learner: " : "You: ") + m.es).join("\n");
+  return `You are ${sc.who}, having a SPOKEN conversation with a BEGINNER Spanish learner (A1–A2). Scenario: "${sc.title}". Learner's goal: ${sc.goal}.
+Rules:
+- Speak only simple, natural Spanish: max 2 short sentences per turn, then stop and let them talk. Speak warmly, clearly, and a little slower than normal.
+- Be forgiving of accent, pronunciation and grammar — guess what they mean.
+- Have a MEANINGFUL conversation: ask about the learner's real life, opinions, feelings. Never stall on greetings.
+- Always end your turn with one question.
+- Don't correct the learner out loud — corrections are shown to them on screen separately.
+- If they're stuck or slip into English, give them the Spanish words they need in one short sentence, then carry on.
+The conversation so far (you already said the first line — don't greet again; wait for the learner, then continue naturally):
+${transcript}`;
+}
+
+function annotationPrompt(sc, learner, partner) {
+  return `A BEGINNER Spanish learner (A1–A2) is having a spoken practice conversation with ${sc.who}. Scenario: "${sc.title}".
+The learner said (transcribed from speech — expect transcription glitches): "${learner}"
+The partner replied: "${partner}"
+Respond ONLY with JSON, no markdown fences:
+{"hint":"English translation of the partner's reply","gloss":{"each word of the partner's reply, lowercase, no punctuation":"short English meaning as used here"},"correction":{"you_said":"","better":"","why":""} OR null,"new_words":[{"es":"","en":"","example":"short Spanish example"}]}
+- "correction": only if the learner clearly made a language error (not a transcription glitch) — recast it. Otherwise null.
+- "new_words": at most 2 genuinely useful words/phrases from the partner's reply (may be empty).
+- "gloss" must cover every word in the partner's reply (and in any example sentences), so a pure beginner can tap any word to see its meaning.`;
+}
+
 /* ---------- Mensajes: contacts who text you first, like real friends ---------- */
 const CONTACTS = [
-  { id: "mateo", emoji: "☕", name: "Mateo", about: "tu amigo de Buenos Aires", topics: "plans to hang out, something that happened to him, checking in on your life" },
-  { id: "rosa", emoji: "🍊", name: "Doña Rosa", about: "la vendedora del mercado", topics: "new fruit that just came in, a discount, asking how you're doing" },
-  { id: "lucia", emoji: "🗺️", name: "Lucía", about: "la madrileña que conociste en la calle", topics: "meeting up for coffee, asking if you got somewhere okay" },
-  { id: "camila", emoji: "🌙", name: "Camila", about: "tu amiga que siempre pregunta por tu día", topics: "asking how your day went, sharing something from her day, sending encouragement" },
-  { id: "diego", emoji: "🎉", name: "Diego", about: "tu amigo que siempre tiene planes", topics: "inviting you to something this weekend, telling you about a plan" },
+  { id: "mateo", voice: "male", emoji: "☕", name: "Mateo", about: "tu amigo de Buenos Aires", topics: "plans to hang out, something that happened to him, checking in on your life" },
+  { id: "rosa", voice: "female", emoji: "🍊", name: "Doña Rosa", about: "la vendedora del mercado", topics: "new fruit that just came in, a discount, asking how you're doing" },
+  { id: "lucia", voice: "female", emoji: "🗺️", name: "Lucía", about: "la madrileña que conociste en la calle", topics: "meeting up for coffee, asking if you got somewhere okay" },
+  { id: "camila", voice: "female", emoji: "🌙", name: "Camila", about: "tu amiga que siempre pregunta por tu día", topics: "asking how your day went, sharing something from her day, sending encouragement" },
+  { id: "diego", voice: "male", emoji: "🎉", name: "Diego", about: "tu amigo que siempre tiene planes", topics: "inviting you to something this weekend, telling you about a plan" },
 ];
 
 function buildContactSystemPrompt(c) {
@@ -229,15 +228,51 @@ const OPENER_META = "\n\n(Meta: this is the FIRST message of a brand-new convers
 const initialDue = () => Date.now() + (6 * 3600000 + Math.random() * 18 * 3600000); // first text within 6-24h
 const nextInterval = () => Date.now() + (24 * 3600000 + Math.random() * 3 * dayMs); // 1-4 days later
 
-async function askAI(messages) {
-  const res = await fetch("/api/chat", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ messages }),
-  });
-  const data = await res.json();
-  if (!res.ok || data.error) throw new Error(data.error || `Request failed (${res.status})`);
+// json: ask the provider for JSON output (callers that parse the reply as JSON).
+async function askAI(messages, { json = false } = {}) {
+  let res, data;
+  try {
+    res = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ messages, json }),
+      // The server gives up on the provider well before this; this only catches a dead connection.
+      signal: AbortSignal.timeout(60000),
+    });
+    data = await res.json();
+  } catch {
+    throw new Error("Couldn't reach the server");
+  }
+  if (!res.ok || data.error) {
+    // A rejected key, empty balance, or mistyped model would otherwise surface as "check your connection" at
+    // every call site — broadcast it once so the app shell can point to AI settings instead.
+    if (data.kind === "auth" || data.kind === "quota" || data.kind === "model") {
+      window.dispatchEvent(new CustomEvent("charla:ai-problem", { detail: { kind: data.kind, message: data.error } }));
+    }
+    throw new Error(data.error || `Request failed (${res.status})`);
+  }
   return (data.text || "").replace(/```json|```/g, "").trim();
+}
+
+// Models sometimes wrap JSON in prose. Never fall back to treating the raw text as the reply — that
+// put literal JSON in the chat bubble and had it read aloud. Returns null when there's no JSON.
+function parseAIJson(raw) {
+  try { return JSON.parse(raw); } catch {}
+  const match = raw.match(/\{[\s\S]*\}/);
+  if (match) try { return JSON.parse(match[0]); } catch {}
+  return null;
+}
+function parseReply(raw) {
+  const p = parseAIJson(raw);
+  if (typeof p?.reply !== "string" || !p.reply.trim()) throw new Error("Unreadable reply");
+  return p;
+}
+
+async function fetchAISettings() {
+  try {
+    const res = await fetch("/api/ai/settings");
+    return res.ok ? await res.json() : null;
+  } catch { return null; }
 }
 
 // Device-local only — for state that shouldn't follow the account across devices
@@ -298,6 +333,9 @@ function AppInner({ user, logout }) {
   const [showPrivacy, setShowPrivacy] = useState(() => localStorage.getItem("charla:privacyNoteDismissed") !== "1");
   const [pendingOpenId, setPendingOpenId] = useState(null);
   const [showProfileMenu, setShowProfileMenu] = useState(false);
+  const [aiSettings, setAISettings] = useState(null);
+  const [showAISettings, setShowAISettings] = useState(false);
+  const [aiProblem, setAIProblem] = useState(null);
   const [threads, setThreads] = useState({});
   const threadsRef = useRef({});
   const { en: englishMode, flash: flashEnglish } = useUI();
@@ -326,6 +364,25 @@ function AppInner({ user, logout }) {
     return hush;
   }, []);
 
+  useEffect(() => {
+    fetchAISettings().then(setAISettings);
+    const onProblem = (e) => setAIProblem(e.detail);
+    window.addEventListener("charla:ai-problem", onProblem);
+    return () => window.removeEventListener("charla:ai-problem", onProblem);
+  }, []);
+
+  const openAISettings = () => {
+    setShowProfileMenu(false);
+    setAIProblem(null);
+    setShowAISettings(true);
+    fetchAISettings().then(s => s && setAISettings(s));
+  };
+  const activeProvider = aiSettings?.providers.find(p => p.id === aiSettings.provider);
+  useEffect(() => { setVoiceProvider(aiSettings?.provider); }, [aiSettings?.provider]);
+  // Real-time voice is Gemini-only; until settings load, assume the default (Gemini) — the server
+  // refuses a Live session for anyone else, and Hablar falls back to the classic pipeline.
+  const liveVoice = aiSettings ? aiSettings.provider === "gemini" : true;
+
   const mergeGloss = useCallback((add) => {
     setGloss(prev => {
       const next = { ...prev };
@@ -352,8 +409,8 @@ function AppInner({ user, logout }) {
       if (!th || th.generating || th.nextDue > Date.now()) continue;
       updateThread(c.id, { generating: true });
       try {
-        const raw = await askAI([{ role: "user", content: buildContactSystemPrompt(c) + OPENER_META }]);
-        let p; try { p = JSON.parse(raw); } catch { p = { reply: raw, hint: null, gloss: {}, new_words: [] }; }
+        const raw = await askAI([{ role: "user", content: buildContactSystemPrompt(c) + OPENER_META }], { json: true });
+        const p = parseReply(raw);
         if (p.gloss && typeof p.gloss === "object") mergeGloss(p.gloss);
         const base = threadsRef.current[c.id];
         if (base.apiHistory.length > 0) {
@@ -406,20 +463,36 @@ function AppInner({ user, logout }) {
             <div className="profileMenu">
               <div className="profileName">{user.name || t("Sin nombre", "No name")}</div>
               <div className="profileEmail dim">{user.email}</div>
+              <button className="profileItem" onClick={openAISettings}>
+                <span>{t("Modelo de IA", "AI model")}</span>
+                <span className="dim">{activeProvider ? (aiSettings.usingFreeTier ? t("Gemini gratis", "Free Gemini") : activeProvider.label) : "…"}</span>
+              </button>
               <button className="profileLogout" onClick={() => { setShowProfileMenu(false); logout(); }}>{t("Cerrar sesión", "Sign out")}</button>
             </div>
           )}
         </div>
       </header>
-      {showPrivacy && (
+      {aiProblem && (
+        <div className="privacyNote problem">
+          <span>
+            {`${activeProvider?.label || "Your AI provider"} ${aiProblem.kind === "auth" ? "rejected your API key."
+              : aiProblem.kind === "model" ? "doesn't recognize the model you picked."
+              : "says you're out of credit or rate-limited."}`}
+            {" "}<button className="linkBtn" onClick={openAISettings}>{t("Ajustes de IA", "AI settings")}</button>
+          </span>
+          <button className="privacyClose" onClick={() => setAIProblem(null)}>✕</button>
+        </div>
+      )}
+      {showPrivacy && aiSettings?.usingFreeTier && (
         <div className="privacyNote">
-          <span>Charla runs on Google's free Gemini API tier. Conversations and photos you scan may be used by Google to improve their models — don't share anything sensitive.</span>
+          <span>Charla runs on Google's free Gemini API tier. Conversations and photos you scan may be used by Google to improve their models — don't share anything sensitive. <button className="linkBtn" onClick={openAISettings}>Use your own AI key</button></span>
           <button className="privacyClose" onClick={dismissPrivacy}>✕</button>
         </div>
       )}
+      {showAISettings && aiSettings && <AISettings settings={aiSettings} setSettings={setAISettings} onClose={() => setShowAISettings(false)} />}
       <main className="main">
         {!loaded ? <div className="loading">{t("Cargando…", "Loading…")}</div> :
-          tab === "hablar" ? <Hablar words={words} persistWords={persistWords} persistReflections={persistReflections} reflections={reflections} goReflect={(id) => { setPendingOpenId(id); setTab("reflexion"); }} gloss={gloss} mergeGloss={mergeGloss} lookupWord={lookupWord} customScenes={customScenes} persistScenes={persistScenes} /> :
+          tab === "hablar" ? <Hablar liveVoice={liveVoice} words={words} persistWords={persistWords} persistReflections={persistReflections} reflections={reflections} goReflect={(id) => { setPendingOpenId(id); setTab("reflexion"); }} gloss={gloss} mergeGloss={mergeGloss} lookupWord={lookupWord} customScenes={customScenes} persistScenes={persistScenes} /> :
           tab === "repasar" ? <Repasar words={words} persistWords={persistWords} gloss={gloss} lookupWord={lookupWord} /> :
           tab === "mensajes" ? <Mensajes contacts={CONTACTS} threads={threads} updateThread={updateThread} words={words} persistWords={persistWords} gloss={gloss} mergeGloss={mergeGloss} lookupWord={lookupWord} /> :
           <Reflexion reflections={reflections} persistReflections={persistReflections} gloss={gloss} lookupWord={lookupWord} openId={pendingOpenId} onOpened={() => setPendingOpenId(null)} />}
@@ -432,6 +505,123 @@ function AppInner({ user, logout }) {
           </button>
         ))}
       </nav>
+    </div>
+  );
+}
+
+/* ---------- AI provider settings: free Gemini, or bring your own key ---------- */
+function AISettings({ settings, setSettings, onClose }) {
+  const t = useT();
+  const [openId, setOpenId] = useState(settings.provider);
+  const [keyInput, setKeyInput] = useState("");
+  const [modelInput, setModelInput] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+
+  const p = settings.providers.find(x => x.id === openId);
+  const isFree = openId === "gemini";
+  const active = settings.provider === openId;
+  const usable = isFree || !!p.keyHint;
+  const canPickModel = !!p.keyHint; // the shared free-tier key always runs the default model
+
+  useEffect(() => { setModelInput(p.model); setKeyInput(""); setError(null); }, [openId]); // eslint-disable-line
+
+  useEffect(() => {
+    const onKey = e => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  const call = async (url, method, body) => {
+    setBusy(true); setError(null);
+    try {
+      const res = await fetch(url, { method, headers: { "Content-Type": "application/json" }, body: body && JSON.stringify(body) });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
+      setSettings(data);
+      return data;
+    } catch (e) { setError(e.message); return null; }
+    finally { setBusy(false); }
+  };
+
+  const saveKey = async () => {
+    if (!(await call(`/api/ai/keys/${openId}`, "PUT", { apiKey: keyInput }))) return;
+    setKeyInput("");
+    await call("/api/ai/settings", "PUT", { provider: openId, model: modelInput });
+  };
+  const removeKey = () => call(`/api/ai/keys/${openId}`, "DELETE");
+  const useThis = () => call("/api/ai/settings", "PUT", { provider: openId, model: canPickModel ? modelInput : undefined });
+
+  const subtitle = x => x.keyHint ? t(`Tu clave ••••${x.keyHint}`, `Your key ••••${x.keyHint}`)
+    : x.id === "gemini" ? t("Gratis · clave compartida de Charla", "Free · Charla's shared key")
+    : t("Usa tu propia clave de API", "Bring your own API key");
+
+  return (
+    <div className="sheetVeil" onClick={onClose}>
+      <div className="sheet" role="dialog" aria-modal="true" aria-label="AI model" onClick={e => e.stopPropagation()}>
+        <div className="sheetHead">
+          <div className="sheetTitle">{t("Modelo de IA", "AI model")}</div>
+          <button className="helpClose" onClick={onClose}>✕</button>
+        </div>
+        <p className="sheetSub">{t(
+          "Charla funciona gratis con Gemini. Con tu propia clave, las respuestas se cobran a tu cuenta, bajo los términos de API de ese proveedor.",
+          "Charla runs free on Gemini. With your own key, replies are billed to your account under that provider's API terms."
+        )}</p>
+        <div className="provList">
+          {settings.providers.map(x => (
+            <div key={x.id} className={"provRow" + (openId === x.id ? " open" : "")}>
+              <button className="provHead" onClick={() => setOpenId(x.id)}>
+                <span className="provText">
+                  <span className="provName">{x.label}</span>
+                  <span className="provSub">{subtitle(x)}</span>
+                </span>
+                {settings.provider === x.id && <span className="provActive">{t("En uso", "In use")}</span>}
+              </button>
+              {openId === x.id && (
+                <div className="provBody">
+                  {!settings.keysEnabled ? (
+                    !isFree && <div className="provNote">{t("Este servidor aún no acepta claves propias.", "This server isn't set up to store your own keys yet.")}</div>
+                  ) : p.keyHint ? (
+                    <div className="provKeyRow">
+                      <span>{t("Clave", "Key")} ••••{p.keyHint}</span>
+                      <button className="miniBtn" disabled={busy} onClick={removeKey}>{t("Quitar", "Remove")}</button>
+                    </div>
+                  ) : (
+                    <>
+                      {isFree && <div className="provNote">{t(
+                        "Opcional: usa tu propia clave de Gemini para tener tus propios límites (con facturación activa, Google no entrena con tus chats).",
+                        "Optional: use your own Gemini key for your own limits (with billing on, Google doesn't train on your chats)."
+                      )}</div>}
+                      <div className="creatorRow">
+                        <input type="password" autoComplete="off" value={keyInput} onChange={e => setKeyInput(e.target.value)}
+                               onKeyDown={e => e.key === "Enter" && keyInput.trim() && !busy && saveKey()}
+                               placeholder={t(`Pega tu clave de ${x.label}`, `Paste your ${x.label} key`)} />
+                        <button className="miniBtn add" disabled={busy || !keyInput.trim()} onClick={saveKey}>{busy ? "…" : t("Guardar", "Save")}</button>
+                      </div>
+                      <a className="provLink" href={x.keyUrl} target="_blank" rel="noreferrer">{t("Consigue una clave ↗", "Get a key ↗")}</a>
+                    </>
+                  )}
+                  {canPickModel ? (
+                    <label className="provModel">
+                      <span className="cardLabel">{t("Modelo", "Model")}</span>
+                      <input list={`models-${x.id}`} value={modelInput} onChange={e => setModelInput(e.target.value)} placeholder={x.defaultModel} />
+                      <datalist id={`models-${x.id}`}>{x.suggestedModels.map(m => <option key={m} value={m} />)}</datalist>
+                    </label>
+                  ) : isFree && (
+                    <div className="provNote">{t("Modelo", "Model")}: {x.defaultModel}</div>
+                  )}
+                  {usable && (!active || (canPickModel && modelInput !== x.model)) && (
+                    <button className="cta small" disabled={busy} onClick={useThis}>
+                      {active ? t("Guardar modelo", "Save model") : t(`Usar ${x.label}`, `Use ${x.label}`)}
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+        {error && <div className="creatorError">{error}</div>}
+      </div>
     </div>
   );
 }
@@ -513,7 +703,7 @@ export default function App() {
 }
 
 /* ==================== HABLAR ==================== */
-function Hablar({ words, persistWords, persistReflections, reflections, goReflect, gloss, mergeGloss, lookupWord, customScenes, persistScenes }) {
+function Hablar({ liveVoice, words, persistWords, persistReflections, reflections, goReflect, gloss, mergeGloss, lookupWord, customScenes, persistScenes }) {
   const t = useT();
   const { en: globalEn } = useUI();
   const [scenario, setScenario] = useState(() => loadSync("sesionActiva", null)?.scenario || null);
@@ -540,18 +730,126 @@ function Hablar({ words, persistWords, persistReflections, reflections, goReflec
     saveLocal("sesionActiva", scenario ? { scenario, msgs, apiHistory } : null);
   }, [scenario, msgs, apiHistory]);
 
+  /* ----- Real-time voice (Gemini Live) when Gemini is the provider. Otherwise — or if Live fails to
+     start twice running — the classic pipeline: browser speech recognition → chat model → TTS. ----- */
+  const [liveDown, setLiveDown] = useState(false);
+  const useLive = liveVoice && !liveDown && liveSupported();
+  const [liveTalking, setLiveTalking] = useState(false);
+  const [liveError, setLiveError] = useState(null);
+  const liveRef = useRef(null);
+  const liveFails = useRef(0);
+  const thinkingTimer = useRef(null);
+  const turnRef = useRef({ me: null, ai: null }); // ids of the bubbles for the turn in progress
+  const scenarioRef = useRef(scenario);
+  const msgsRef = useRef(msgs);
+  scenarioRef.current = scenario;
+  msgsRef.current = msgs;
+
+  useEffect(() => {
+    setCharacterVoice(scenario ? voiceFor(scenario) : null);
+    return () => setCharacterVoice(null);
+  }, [scenario]);
+  useEffect(() => () => { liveRef.current?.close(); clearTimeout(thinkingTimer.current); }, []);
+
+  const upsertTurnMsg = (role, text) => {
+    const id = turnRef.current[role];
+    if (id) return setMsgs(m => m.map(x => (x.id === id ? { ...x, es: text } : x)));
+    const newId = Math.random().toString(36).slice(2);
+    turnRef.current[role] = newId;
+    setMsgs(m => [...m, { id: newId, role, es: text, ...(role === "ai" && { hint: null, correction: null, new_words: [] }) }]);
+  };
+
+  // Live speaks plain Spanish; the hint, glossary, correction and new words fill in afterwards.
+  const annotate = async (sc, turn, aiId) => {
+    try {
+      const p = parseAIJson(await askAI([{ role: "user", content: annotationPrompt(sc, turn.user, turn.ai) }], { json: true }));
+      if (!p) return;
+      setMsgs(m => m.map(x => (x.id === aiId ? {
+        ...x,
+        hint: p.hint || null,
+        correction: p.correction?.better ? p.correction : null,
+        new_words: Array.isArray(p.new_words) ? p.new_words : [],
+      } : x)));
+      if (p.gloss && typeof p.gloss === "object") mergeGloss(p.gloss);
+    } catch {} // the conversation carries on without the extras — words can still be tapped for lookups
+  };
+
+  const onLiveEvent = (type, payload) => {
+    if (type === "talking") {
+      setLiveTalking(payload);
+      if (payload) { setHelp(null); setLiveError(null); }
+    } else if (type === "thinking") {
+      setBusy(true);
+      clearTimeout(thinkingTimer.current);
+      thinkingTimer.current = setTimeout(() => {
+        setBusy(false);
+        setLiveError(t("No hubo respuesta — inténtalo otra vez.", "No reply came back — try again."));
+      }, 15000);
+    } else if (type === "user") {
+      // A new learner turn while the last reply's bubble is still open means they cut in.
+      if (turnRef.current.ai) turnRef.current = { me: null, ai: null };
+      upsertTurnMsg("me", payload);
+    } else if (type === "ai") {
+      clearTimeout(thinkingTimer.current);
+      setBusy(false);
+      setLiveError(null); // a slow reply can still land after the "no reply" notice
+      liveFails.current = 0;
+      upsertTurnMsg("ai", payload);
+    } else if (type === "turn") {
+      clearTimeout(thinkingTimer.current);
+      setBusy(false);
+      const aiId = turnRef.current.ai;
+      turnRef.current = { me: null, ai: null };
+      // Kept in the classic shape so "help me answer" (and a switch to another provider) keep working.
+      setApiHistory(h => [...h, { role: "user", content: payload.user || "…" }, { role: "assistant", content: JSON.stringify({ reply: payload.ai }) }]);
+      if (aiId && scenarioRef.current) annotate(scenarioRef.current, payload, aiId);
+    } else if (type === "error") {
+      clearTimeout(thinkingTimer.current);
+      setBusy(false);
+      if (payload?.name === "NotAllowedError") {
+        return setLiveError(t("Permiso de micrófono denegado — actívalo en los ajustes del navegador.", "Microphone permission denied — enable it in your browser settings."));
+      }
+      liveFails.current += 1;
+      if (payload?.kind === "not-gemini" || liveFails.current >= 2) {
+        liveRef.current?.close();
+        liveRef.current = null;
+        setLiveError(null);
+        setLiveDown(true);
+        return;
+      }
+      setLiveError(t("Se cortó la conexión de voz — toca para intentarlo otra vez.", "The voice connection dropped — tap to try again."));
+    }
+  };
+  const liveEventRef = useRef(onLiveEvent);
+  liveEventRef.current = onLiveEvent;
+
+  const getLive = () => {
+    liveRef.current ??= new LiveSession({
+      getSetup: () => ({ systemInstruction: buildLivePrompt(scenarioRef.current, msgsRef.current), voice: voiceFor(scenarioRef.current) }),
+      onEvent: (type, payload) => liveEventRef.current(type, payload),
+    });
+    return liveRef.current;
+  };
+
   const send = useCallback(async (text) => {
     text = text.trim();
     if (!text) return;
     setHelp(null);
+    if (useLive) {
+      const id = Math.random().toString(36).slice(2);
+      turnRef.current = { me: id, ai: null };
+      setMsgs(m => [...m, { id, role: "me", es: text }]);
+      getLive().sendText(text);
+      return;
+    }
     setMsgs(m => [...m, { role: "me", es: text }]);
     setBusy(true);
     setApiHistory(prev => {
       const hist = [...prev, { role: "user", content: text }];
       (async () => {
         try {
-          const raw = await askAI(hist);
-          let p; try { p = JSON.parse(raw); } catch { p = { reply: raw, hint: null, correction: null, new_words: [] }; }
+          const raw = await askAI(hist, { json: true });
+          const p = parseReply(raw);
           setMsgs(m => [...m, { role: "ai", es: p.reply, hint: p.hint, correction: p.correction, new_words: p.new_words || [] }]);
           setApiHistory(h => [...h, { role: "assistant", content: raw }]);
           if (p.gloss && typeof p.gloss === "object") mergeGloss(p.gloss);
@@ -563,13 +861,13 @@ function Hablar({ words, persistWords, persistReflections, reflections, goReflec
       })();
       return hist;
     });
-  }, [mergeGloss, t]);
+  }, [mergeGloss, t, useLive]); // eslint-disable-line react-hooks/exhaustive-deps -- getLive only touches refs
 
   const retryLast = useCallback(async () => {
     setBusy(true);
     try {
-      const raw = await askAI(apiHistory);
-      let p; try { p = JSON.parse(raw); } catch { p = { reply: raw, hint: null, correction: null, new_words: [] }; }
+      const raw = await askAI(apiHistory, { json: true });
+      const p = parseReply(raw);
       setMsgs(m => {
         const copy = [...m];
         copy[copy.length - 1] = { role: "ai", es: p.reply, hint: p.hint, correction: p.correction, new_words: p.new_words || [] };
@@ -594,10 +892,27 @@ function Hablar({ words, persistWords, persistReflections, reflections, goReflec
       { role: "user", content: buildSystemPrompt(sc) },
       { role: "assistant", content: JSON.stringify({ reply: sc.opener, hint: "", correction: null, new_words: [] }) },
     ]);
+    setCharacterVoice(voiceFor(sc)); // the scenario effect only runs after this tap — the opener needs the voice now
     speak(sc.opener); // scenario tap = user gesture, unlocks audio on iOS
+    if (useLive) {
+      // Connect while the opener plays, so the first tap on the mic is instant.
+      liveRef.current?.close();
+      liveRef.current = null;
+      scenarioRef.current = sc;
+      msgsRef.current = [{ role: "ai", es: sc.opener }];
+      getLive().connect().catch(err => liveEventRef.current("error", err));
+    }
   };
 
-  const leave = () => { hush(); mic.stop(); setScenario(null); setMsgs([]); setApiHistory([]); };
+  const leave = () => {
+    hush(); mic.stop();
+    liveRef.current?.close();
+    liveRef.current = null;
+    turnRef.current = { me: null, ai: null };
+    clearTimeout(thinkingTimer.current);
+    setBusy(false); setLiveTalking(false); setLiveError(null);
+    setScenario(null); setMsgs([]); setApiHistory([]);
+  };
 
   const saveWord = (w) => {
     if (words.some(x => strip(x.es) === strip(w.es))) return;
@@ -606,15 +921,15 @@ function Hablar({ words, persistWords, persistReflections, reflections, goReflec
 
   const endSession = async () => {
     if (msgs.length < 3 || busy) return;
-    hush(); mic.stop();
+    hush(); mic.stop(); liveRef.current?.stopTalking();
     setBusy(true); setEnding(true); setEndError(false);
     try {
       const transcript = msgs.map(m => (m.role === "me" ? "Learner: " : "Partner: ") + m.es).join("\n");
       const raw = await askAI([{
         role: "user",
         content: `A beginner Spanish learner just finished this spoken practice conversation:\n${transcript}\n\nCreate a short reflection. Respond ONLY with JSON, no fences:\n{"summary":"1 warm sentence in English about what they did","can_now_say":["2-3 Spanish phrases they used or learned"],"questions":["2 short reflection questions in English about what was hard / what they'd say differently"]}`,
-      }]);
-      let p; try { p = JSON.parse(raw); } catch { p = { summary: "You held a real spoken conversation in Spanish.", can_now_say: [], questions: ["What was the hardest moment to say out loud?", "What would you say differently next time?"] }; }
+      }], { json: true });
+      const p = parseAIJson(raw) || { summary: "You held a real spoken conversation in Spanish.", can_now_say: [], questions: ["What was the hardest moment to say out loud?", "What would you say differently next time?"] };
       const id = Date.now();
       persistReflections([{ id, date: new Date().toLocaleDateString(), scenario: scenario.title, sceneTitleEn: scenario.titleEn || scenario.title_en || scenario.goal, transcript: msgs, ...p, note: "" }, ...reflections]);
       leave();
@@ -637,9 +952,10 @@ function Hablar({ words, persistWords, persistReflections, reflections, goReflec
     try {
       const raw = await askAI([{
         role: "user",
-        content: `Create a Spanish conversation practice scenario for a BEGINNER (A1-A2) from this idea: "${idea}". Make it a meaningful conversation with a clear goal, not small talk. Respond ONLY with JSON, no fences:\n{"emoji":"one emoji","title":"short Spanish title (2-4 words)","title_en":"English translation of the title","goal":"one-line goal in English","who":"character name + one-line description in English","opener":"the character's first line in simple Spanish, max 2 short sentences, ending with a question","hint":"English translation of the opener"}`,
-      }]);
-      const p = JSON.parse(raw);
+        content: `Create a Spanish conversation practice scenario for a BEGINNER (A1-A2) from this idea: "${idea}". Make it a meaningful conversation with a clear goal, not small talk. Respond ONLY with JSON, no fences:\n{"emoji":"one emoji","title":"short Spanish title (2-4 words)","title_en":"English translation of the title","goal":"one-line goal in English","who":"character name + one-line description in English","voice":"female or male, matching the character","opener":"the character's first line in simple Spanish, max 2 short sentences, ending with a question","hint":"English translation of the opener"}`,
+      }], { json: true });
+      const p = parseAIJson(raw);
+      if (!p?.opener) throw new Error("Unreadable scene");
       persistScenes([...customScenes, { id: "custom-" + Date.now(), custom: true, ...p }]);
       setIdeaText("");
     } catch {
@@ -655,8 +971,9 @@ function Hablar({ words, persistWords, persistReflections, reflections, goReflec
       const raw = await askAI([...apiHistory, {
         role: "user",
         content: `(Meta request — do NOT continue the conversation. The learner is stuck on how to answer your last message. Respond ONLY with JSON, no fences:\n{"starters":["2 short Spanish sentence starters they could begin with"],"example":"one full, simple example answer in Spanish","example_en":"English translation of the example"})`,
-      }]);
-      const p = JSON.parse(raw);
+      }], { json: true });
+      const p = parseAIJson(raw);
+      if (!p) throw new Error("Couldn't get help — try again.");
       setHelp({ stage: "hint", ...p });
     } catch (e) {
       setHelp({ stage: "hint", starters: [], error: e.message || "Couldn't get help — try again." });
@@ -664,11 +981,14 @@ function Hablar({ words, persistWords, persistReflections, reflections, goReflec
     setHelpBusy(false);
   };
 
+  const listening = useLive ? liveTalking : mic.listening;
+  const voiceError = useLive ? liveError : mic.error;
+
   if (!scenario) return (
     <div className="pad">
       <h1 className="display"><TapPhrase es={<>Habla <em>de verdad</em>.</>} en="Speak for real." /></h1>
       <p className="sub">Pick a scene, then just talk — your partner speaks back, keeps it simple, and keeps it going. No "hola, ¿cómo estás?" on loop.</p>
-      {!SR && <div className="warn">🎙️ Voice input isn't supported in this browser — you'll get a keyboard instead, and replies are still spoken aloud. Chrome or Safari work best.</div>}
+      {!SR && !(liveVoice && liveSupported()) && <div className="warn">🎙️ Voice input isn't supported in this browser — you'll get a keyboard instead, and replies are still spoken aloud. Chrome or Safari work best.</div>}
       <div className="scenes">
         {[...SCENARIOS, ...customScenes].map(sc => (
           <button key={sc.id} className="scene" onClick={() => start(sc)}>
@@ -778,25 +1098,28 @@ function Hablar({ words, persistWords, persistReflections, reflections, goReflec
             )}
           </div>
         )}
-        {typeMode || !mic.supported ? (
+        {typeMode || !(useLive || mic.supported) ? (
           <div className="typeRow">
             <button className="ghost" onClick={getHelp} disabled={helpBusy || busy} title="Help me answer">🙋</button>
             <input value={input} onChange={e => setInput(e.target.value)}
                    onKeyDown={e => { if (e.key === "Enter" && input.trim() && !busy) { send(input); setInput(""); } }}
                    placeholder={t("Escribe en español…", "Write in Spanish…")} autoFocus />
             <button className="sendBtn" disabled={busy || !input.trim()} onClick={() => { send(input); setInput(""); }}>➤</button>
-            {mic.supported && <button className="ghost" onClick={() => setTypeMode(false)}>🎙️</button>}
+            {(useLive || mic.supported) && <button className="ghost" onClick={() => setTypeMode(false)}>🎙️</button>}
           </div>
         ) : (
           <>
-            <div className={"liveText" + (mic.error ? " err" : "")}>
-              {mic.error ? mic.error : helpBusy ? t("Buscando ayuda…", "Finding help…") : mic.listening ? (mic.interim || t("Te escucho…", "I'm listening…")) : busy ? t("Pensando…", "Thinking…") : t("Toca y habla", "Tap and talk")}
+            <div className={"liveText" + (voiceError ? " err" : "")}>
+              {voiceError ? voiceError : helpBusy ? t("Buscando ayuda…", "Finding help…") : listening ? ((!useLive && mic.interim) || t("Te escucho…", "I'm listening…")) : busy ? t("Pensando…", "Thinking…") : t("Toca y habla", "Tap and talk")}
             </div>
             <div className="talkRow">
               <button className="sideTool" onClick={getHelp} disabled={helpBusy || busy} title="Help me answer">🙋</button>
-              <button className={"talkBtn " + (mic.listening ? "live" : "")} disabled={busy}
-                      onClick={() => (mic.listening ? mic.stop() : mic.start())}>
-                {mic.listening ? "◼" : "🎙️"}
+              {/* In Live mode the learner can cut in at any time, so the button stays enabled. */}
+              <button className={"talkBtn " + (listening ? "live" : "")} disabled={busy && !useLive}
+                      onClick={() => (useLive
+                        ? (liveTalking ? liveRef.current?.stopTalking() : getLive().startTalking())
+                        : (mic.listening ? mic.stop() : mic.start()))}>
+                {listening ? "◼" : "🎙️"}
               </button>
               <button className="sideTool" onClick={() => setTypeMode(true)} title="Type instead">⌨️</button>
             </div>
@@ -857,6 +1180,11 @@ function ContactThread({ contact, thread, updateThread, onBack, words, persistWo
   const msgs = thread?.msgs || [];
   const apiHistory = thread?.apiHistory || [];
 
+  useEffect(() => {
+    setCharacterVoice(voiceFor(contact));
+    return () => setCharacterVoice(null);
+  }, [contact]);
+
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [msgs, busy]);
 
   const send = useCallback(async (text) => {
@@ -873,8 +1201,8 @@ function ContactThread({ contact, thread, updateThread, onBack, words, persistWo
     const hist = [...apiHistory, { role: "user", content }];
     updateThread(contact.id, { apiHistory: hist });
     try {
-      const raw = await askAI(hist);
-      let p; try { p = JSON.parse(raw); } catch { p = { reply: raw, hint: null, correction: null, new_words: [] }; }
+      const raw = await askAI(hist, { json: true });
+      const p = parseReply(raw);
       updateThread(contact.id, {
         msgs: [...withMe, { role: "them", es: p.reply, hint: p.hint, correction: p.correction, new_words: p.new_words || [], ts: Date.now() }],
         apiHistory: [...hist, { role: "assistant", content: raw }],
@@ -891,8 +1219,8 @@ function ContactThread({ contact, thread, updateThread, onBack, words, persistWo
   const retryLast = useCallback(async () => {
     setBusy(true);
     try {
-      const raw = await askAI(apiHistory);
-      let p; try { p = JSON.parse(raw); } catch { p = { reply: raw, hint: null, correction: null, new_words: [] }; }
+      const raw = await askAI(apiHistory, { json: true });
+      const p = parseReply(raw);
       const copy = [...msgs];
       copy[copy.length - 1] = { role: "them", es: p.reply, hint: p.hint, correction: p.correction, new_words: p.new_words || [], ts: Date.now() };
       updateThread(contact.id, { msgs: copy, apiHistory: [...apiHistory, { role: "assistant", content: raw }] });
@@ -1119,8 +1447,9 @@ function Repasar({ words, persistWords, gloss, lookupWord }) {
           { type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } },
           { type: "text", text: `This photo contains Spanish text (a sign, menu, message, page…). 1) Transcribe the Spanish exactly, fixing only obvious OCR errors. 2) Translate it to natural English. 3) Extract 3–8 useful words or short phrases for a BEGINNER, each with an English meaning and a short Spanish example. Respond ONLY with JSON, no fences:\n{"text":"","translation":"","words":[{"es":"","en":"","example":""}]}` },
         ],
-      }]);
-      const p = JSON.parse(raw);
+      }], { json: true });
+      const p = parseAIJson(raw);
+      if (!p?.text) throw new Error("Unreadable scan");
       const fresh = (p.words || []).filter(w => w.es && w.en && !words.some(x => strip(x.es) === strip(w.es)));
       if (fresh.length) persistWords([...words, ...fresh.map(w => ({ ...w, due: Date.now(), interval: 0, reps: 0, added: Date.now(), scanned: true }))]);
       setScan({ text: p.text, translation: p.translation, words: p.words || [], added: fresh.map(w => w.es) });
@@ -1257,7 +1586,7 @@ function Repasar({ words, persistWords, gloss, lookupWord }) {
             : (
               <>
                 <div className="cardLabel">{t("Texto", "Text")}</div>
-                <div className="scanText"><TapText text={scan.text} gloss={gloss} lookup={lookupWord} /> <span className="spk" onClick={() => speak(scan.text, 0.85)}>🔊</span></div>
+                <div className="scanText"><TapText text={scan.text} gloss={gloss} lookup={lookupWord} /> <span className="spk" onClick={() => speak(scan.text, 0.85, { own: true })}>🔊</span></div>
                 <div className="cardLabel">{t("Traducción", "Translation")}</div>
                 <div className="scanTrans">{scan.translation}</div>
                 <div className="cardLabel">{t("Palabras guardadas", "Saved words")}</div>
@@ -1405,6 +1734,32 @@ const css = `
 .profileMenu { position: absolute; top: 36px; right: 0; background: #fff; border: 1.5px solid ${T.line}; border-radius: 14px; padding: 12px 14px; min-width: 180px; box-shadow: 0 4px 16px #0002; z-index: 10; text-align: left; }
 .profileName { font-weight: 700; font-size: 13.5px; }
 .profileEmail { font-size: 12px; margin-top: 1px; margin-bottom: 10px; word-break: break-all; }
+.profileItem { width: 100%; display: flex; justify-content: space-between; gap: 10px; border: none; background: ${T.sand}; border-radius: 10px; padding: 8px 10px; margin-bottom: 8px; font-size: 12.5px; font-weight: 600; color: ${T.ink}; cursor: pointer; text-align: left; }
+.profileItem .dim { font-weight: 400; }
+.linkBtn { background: none; border: none; padding: 0; font: inherit; color: ${T.rosa}; font-weight: 700; text-decoration: underline; cursor: pointer; }
+.privacyNote.problem { background: ${T.rosaSoft}; }
+.sheetVeil { position: fixed; inset: 0; background: #1B214566; z-index: 20; display: flex; align-items: flex-end; justify-content: center; }
+.sheet { width: 100%; max-width: 560px; max-height: 88vh; overflow-y: auto; background: ${T.paper}; border-radius: 20px 20px 0 0; padding: 18px 16px 28px; }
+.sheetHead { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+.sheetHead .helpClose { position: static; }
+.sheetTitle { font-family: 'Fraunces', Georgia, serif; font-size: 22px; font-weight: 600; }
+.sheetSub { font-size: 13px; color: ${T.dim}; line-height: 1.45; margin-bottom: 14px; }
+.provList { display: flex; flex-direction: column; gap: 8px; }
+.provRow { background: #fff; border: 1.5px solid ${T.line}; border-radius: 16px; overflow: hidden; }
+.provRow.open { border-color: ${T.ink}55; }
+.provHead { width: 100%; display: flex; align-items: center; gap: 10px; background: none; border: none; padding: 12px 14px; cursor: pointer; text-align: left; color: ${T.ink}; }
+.provText { flex: 1; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.provName { font-weight: 700; font-size: 15px; }
+.provSub { font-size: 12px; color: ${T.dim}; }
+.provActive { background: ${T.leafSoft}; color: ${T.leaf}; font-size: 11px; font-weight: 700; border-radius: 99px; padding: 3px 9px; flex-shrink: 0; }
+.provBody { padding: 0 14px 14px; display: flex; flex-direction: column; gap: 10px; }
+.provNote { font-size: 12.5px; color: ${T.dim}; line-height: 1.45; }
+.provKeyRow { display: flex; justify-content: space-between; align-items: center; background: ${T.sand}; border-radius: 10px; padding: 8px 12px; font-size: 13px; }
+.provLink { font-size: 12.5px; color: ${T.rosa}; font-weight: 600; text-decoration: none; }
+.provModel { display: flex; flex-direction: column; }
+.provModel input { border: 1.5px solid ${T.line}; border-radius: 10px; padding: 10px 12px; font-size: 14px; background: #fff; outline-color: ${T.rosa}; }
+.provBody .cta.small { margin: 0; }
+.cta:disabled, .miniBtn:disabled { opacity: .45; cursor: default; }
 .profileLogout { width: 100%; border: 1.5px solid ${T.line}; background: #fff; border-radius: 99px; padding: 7px 0; font-size: 12.5px; font-weight: 700; color: ${T.rosa}; cursor: pointer; }
 
 .loginWrap { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; }
