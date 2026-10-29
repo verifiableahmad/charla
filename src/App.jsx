@@ -922,53 +922,57 @@ function AppInner({ user, logout }) {
           )}
         </div>
       </header>
-      {saveProblem && (
-        <div className="noticeBar problem" role="status">
-          <span>
-            {saveProblem === "auth"
-              ? <>{t("Tu sesión caducó. Lo que no se guardó sigue en este dispositivo y se subirá cuando vuelvas a entrar.", "Your session expired. Anything unsaved is kept on this device and uploads when you sign in again.")}{" "}
-                  <a className="linkBtn" href="/api/auth/google">{t("Entrar otra vez", "Sign in again")}</a></>
-              : t("No puedo guardar ahora mismo. Lo sigo intentando.", "Can't save right now. Still trying.")}
-          </span>
-        </div>
-      )}
-      {aiProblem && (
-        <div className="noticeBar problem">
-          <span>
-            {(() => {
-              const who = activeProvider?.label || t("Tu proveedor de IA", "Your AI provider");
-              return aiProblem.kind === "auth" ? t(`${who} rechazó tu clave.`, `${who} rejected your API key.`)
-                : aiProblem.kind === "model" ? t(`${who} no reconoce el modelo que elegiste.`, `${who} doesn't recognize the model you picked.`)
-                : t(`${who} dice que no te queda saldo o que vas demasiado rápido.`, `${who} says you're out of credit or rate-limited.`);
-            })()}
-            {" "}<button className="linkBtn" onClick={openAISettings}>{t("Ajustes de IA", "AI settings")}</button>
-          </span>
-          <button className="iconBtn small" onClick={() => setAIProblem(null)} aria-label={t("Cerrar", "Close")}><Icon name="close" size={16} /></button>
-        </div>
-      )}
-      {showPrivacy && <PrivacySheet freeTier={!!aiSettings?.usingFreeTier} onClose={() => setShowPrivacy(false)} onAISettings={() => { setShowPrivacy(false); openAISettings(); }} />}
-      {showAISettings && aiSettings && <AISettings settings={aiSettings} setSettings={setAISettings} onClose={() => setShowAISettings(false)} />}
-      <main className="main">
-        {loadState === "loading" ? <div className="loading">{t("Cargando…", "Loading…")}</div> :
-          loadState === "error" ? (
-            <div className="loading">
-              <p>{t("No pude cargar tus datos. No se ha perdido nada.", "Couldn't load your data. Nothing has been lost.")}</p>
-              <button className="cta small" onClick={load}>{t("Reintentar", "Try again")}</button>
+      <div className="frame">
+        <nav className="nav">
+          {[["hablar", "talk", t("Hablar", "Talk")], ["mensajes", "messages", t("Mensajes", "Messages"), unreadCount], ["repasar", "cards", t("Repasar", "Review"), dueCount], ["reflexion", "progress", t("Progreso", "Progress")]].map(([id, icon, label, badge]) => (
+            <button key={id} className={"navBtn " + (tab === id ? "on" : "")} aria-current={tab === id ? "page" : undefined} onClick={() => { hush(); setTab(id); if (id === "mensajes") checkDue(); }}>
+              <span className="navIcon"><Icon name={icon} size={24} stroke={tab === id ? 2.1 : 1.8} />{badge > 0 && <span className="badge">{badge}</span>}</span>
+              <span>{label}</span>
+            </button>
+          ))}
+        </nav>
+        <div className="stage">
+          {saveProblem && (
+            <div className="noticeBar problem" role="status">
+              <span>
+                {saveProblem === "auth"
+                  ? <>{t("Tu sesión caducó. Lo que no se guardó sigue en este dispositivo y se subirá cuando vuelvas a entrar.", "Your session expired. Anything unsaved is kept on this device and uploads when you sign in again.")}{" "}
+                      <a className="linkBtn" href="/api/auth/google">{t("Entrar otra vez", "Sign in again")}</a></>
+                  : t("No puedo guardar ahora mismo. Lo sigo intentando.", "Can't save right now. Still trying.")}
+              </span>
             </div>
-          ) :
-          tab === "hablar" ? <Hablar userId={user.id} liveVoice={liveVoice} words={words} updateWords={updateWords} updateReflections={updateReflections} goReflect={(id) => { setPendingOpenId(id); setTab("reflexion"); }} goReview={goReview} recordChat={recordChat} rewind={rewind} setRewind={setRewind} startScene={pendingScene} onSceneStarted={() => setPendingScene(null)} gloss={gloss} mergeGloss={mergeGloss} lookupWord={lookupWord} customScenes={customScenes} updateScenes={updateScenes} /> :
-          tab === "repasar" ? <Repasar words={words} updateWords={updateWords} recordActivity={recordActivity} gloss={gloss} lookupWord={lookupWord} startWith={reviewQueue} onStarted={() => setReviewQueue(null)} /> :
-          tab === "mensajes" ? <Mensajes contacts={CONTACTS} threads={threads} updateThread={updateThread} getThread={getThread} recordActivity={recordActivity} words={words} updateWords={updateWords} gloss={gloss} mergeGloss={mergeGloss} lookupWord={lookupWord} /> :
-          <Reflexion reflections={reflections} updateReflections={updateReflections} deleteChat={deleteChat} progress={progress} words={words} gloss={gloss} lookupWord={lookupWord} openId={pendingOpenId} onOpened={() => setPendingOpenId(null)} onPractice={goPractice} />}
-      </main>
-      <nav className="nav">
-        {[["hablar", "talk", t("Hablar", "Talk")], ["mensajes", "messages", t("Mensajes", "Messages"), unreadCount], ["repasar", "cards", t("Repasar", "Review"), dueCount], ["reflexion", "progress", t("Progreso", "Progress")]].map(([id, icon, label, badge]) => (
-          <button key={id} className={"navBtn " + (tab === id ? "on" : "")} aria-current={tab === id ? "page" : undefined} onClick={() => { hush(); setTab(id); if (id === "mensajes") checkDue(); }}>
-            <span className="navIcon"><Icon name={icon} size={24} stroke={tab === id ? 2.1 : 1.8} />{badge > 0 && <span className="badge">{badge}</span>}</span>
-            <span>{label}</span>
-          </button>
-        ))}
-      </nav>
+          )}
+          {aiProblem && (
+            <div className="noticeBar problem">
+              <span>
+                {(() => {
+                  const who = activeProvider?.label || t("Tu proveedor de IA", "Your AI provider");
+                  return aiProblem.kind === "auth" ? t(`${who} rechazó tu clave.`, `${who} rejected your API key.`)
+                    : aiProblem.kind === "model" ? t(`${who} no reconoce el modelo que elegiste.`, `${who} doesn't recognize the model you picked.`)
+                    : t(`${who} dice que no te queda saldo o que vas demasiado rápido.`, `${who} says you're out of credit or rate-limited.`);
+                })()}
+                {" "}<button className="linkBtn" onClick={openAISettings}>{t("Ajustes de IA", "AI settings")}</button>
+              </span>
+              <button className="iconBtn small" onClick={() => setAIProblem(null)} aria-label={t("Cerrar", "Close")}><Icon name="close" size={16} /></button>
+            </div>
+          )}
+          {showPrivacy && <PrivacySheet freeTier={!!aiSettings?.usingFreeTier} onClose={() => setShowPrivacy(false)} onAISettings={() => { setShowPrivacy(false); openAISettings(); }} />}
+          {showAISettings && aiSettings && <AISettings settings={aiSettings} setSettings={setAISettings} onClose={() => setShowAISettings(false)} />}
+          <main className="main">
+            {loadState === "loading" ? <div className="loading">{t("Cargando…", "Loading…")}</div> :
+              loadState === "error" ? (
+                <div className="loading">
+                  <p>{t("No pude cargar tus datos. No se ha perdido nada.", "Couldn't load your data. Nothing has been lost.")}</p>
+                  <button className="cta small" onClick={load}>{t("Reintentar", "Try again")}</button>
+                </div>
+              ) :
+              tab === "hablar" ? <Hablar userId={user.id} liveVoice={liveVoice} words={words} updateWords={updateWords} updateReflections={updateReflections} goReflect={(id) => { setPendingOpenId(id); setTab("reflexion"); }} goReview={goReview} recordChat={recordChat} rewind={rewind} setRewind={setRewind} startScene={pendingScene} onSceneStarted={() => setPendingScene(null)} gloss={gloss} mergeGloss={mergeGloss} lookupWord={lookupWord} customScenes={customScenes} updateScenes={updateScenes} /> :
+              tab === "repasar" ? <Repasar words={words} updateWords={updateWords} recordActivity={recordActivity} gloss={gloss} lookupWord={lookupWord} startWith={reviewQueue} onStarted={() => setReviewQueue(null)} /> :
+              tab === "mensajes" ? <Mensajes contacts={CONTACTS} threads={threads} updateThread={updateThread} getThread={getThread} recordActivity={recordActivity} words={words} updateWords={updateWords} gloss={gloss} mergeGloss={mergeGloss} lookupWord={lookupWord} /> :
+              <Reflexion reflections={reflections} updateReflections={updateReflections} deleteChat={deleteChat} progress={progress} words={words} gloss={gloss} lookupWord={lookupWord} openId={pendingOpenId} onOpened={() => setPendingOpenId(null)} onPractice={goPractice} />}
+          </main>
+        </div>
+      </div>
     </div>
   );
 }
@@ -3403,4 +3407,44 @@ button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid 
 .navBtn.on { color: ${T.rosa}; font-weight: 700; }
 .navIcon { font-size: 20px; position: relative; }
 .badge { position: absolute; top: -4px; right: -12px; background: ${T.rosa}; color: #fff; font-size: 10px; font-weight: 700; border-radius: 99px; min-width: 16px; height: 16px; display: flex; align-items: center; justify-content: center; padding: 0 4px; }
+.frame, .stage { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+
+/* Desktop browsers: the tab bar becomes a sidebar, screens get a readable column in the middle
+   of the window, and sheets open as centered dialogs instead of sliding up from the bottom. */
+@media (min-width: 960px) {
+  .app { max-width: none; }
+  .top { padding: 14px 28px; border-bottom: 1px solid ${T.line}; }
+  .tag { font-size: 12px; }
+  .frame { flex-direction: row; }
+  .stage { min-width: 0; }
+  .nav { position: static; transform: none; width: 232px; max-width: none; flex-shrink: 0; flex-direction: column; gap: 4px; padding: 20px 14px; background: ${T.paper}; border-top: none; border-right: 1px solid ${T.line}; }
+  .app:has(.chatWrap) .nav, .app:has(.rewindWrap) .nav { display: flex; }
+  .navBtn { flex: none; flex-direction: row; justify-content: flex-start; gap: 12px; min-height: 46px; padding: 0 14px; border-radius: 12px; font-size: 15px; font-weight: 600; color: ${T.dim}; }
+  .navBtn:hover { background: ${T.sand}; color: ${T.ink}; }
+  .navBtn.on, .navBtn.on:hover { background: ${T.rosaSoft}; color: ${T.rosaDeep}; }
+  .navIcon { display: flex; }
+  .noticeBar { width: calc(100% - 64px); max-width: 840px; margin: 14px auto 0; }
+  .pad { width: 100%; max-width: 904px; margin: 0 auto; padding: 32px 32px 56px; }
+  .pad.center { padding-top: 80px; }
+  .display { font-size: 36px; }
+  .scenes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+  .scenes .creator { grid-column: 1 / -1; }
+  .scene:hover { border-color: ${T.rosa}66; }
+  .contactRow:hover, .dayBlock:hover, .areaHead:hover { border-color: ${T.ink}33; }
+  .dayGrid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .toolCards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  /* Conversations use the full height; their lines stay in a centered column, the scrollbar at the edge. */
+  .chatHead { padding: 10px max(24px, calc((100% - 840px) / 2)); }
+  .msgs { padding: 24px max(32px, calc((100% - 800px) / 2)) 12px; }
+  .talkBar { padding: 12px max(32px, calc((100% - 800px) / 2)) 16px; }
+  .bubble { max-width: 70%; }
+  .chatArt { aspect-ratio: 6 / 1; }
+  .rewindFoot { padding: 12px max(32px, calc((100% - 840px) / 2)) 16px; }
+  .pad.rewind { padding-bottom: 24px; }
+  .sheetVeil { align-items: center; padding: 24px; }
+  .sheet { max-width: 520px; max-height: 84vh; border-radius: 20px; padding: 22px 22px 26px; box-shadow: 0 12px 40px #1B214533; }
+  .unlocked { max-width: none; align-items: center; }
+  .unlockedHead, .unlockedBody, .unlockedFoot { width: 100%; max-width: 480px; }
+}
+
 `;
