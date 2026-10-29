@@ -106,7 +106,7 @@ const gemini = {
   keyUrl: "https://aistudio.google.com/apikey",
   // Model for the real-time voice conversation (Live API) — separate from the text model above.
   liveModel: "gemini-3.8-live",
-  async chat({ messages, model, apiKey, json }) {
+  async chat({ messages, model, apiKey, json, hedge }) {
     const call = (m) => (signal) =>
       postJson(
         `https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent`,
@@ -124,7 +124,9 @@ const gemini = {
         },
         { signal }
       );
-    const result = await hedged(call(model), call(model === gemini.defaultModel ? HEDGE_MODEL : model));
+    // Hedging sends a second, billed request, so it only runs on Charla's shared key, never on
+    // a learner's own key, where it could double their bill whenever Gemini is slow.
+    const result = hedge ? await hedged(call(model), call(HEDGE_MODEL)) : await call(model)();
     if (!result.ok) {
       const err = result.data?.error || {};
       const message = err.message || `Gemini request failed (${result.status})`;
@@ -163,7 +165,7 @@ const openai = {
   defaultModel: "gpt-6-luna",
   suggestedModels: ["gpt-6-luna", "gpt-6.1-sol"],
   keyUrl: "https://platform.openai.com/api-keys",
-  async chat({ messages, model, apiKey }) {
+  async chat({ messages, model, apiKey, json }) {
     const result = await postJson(
       "https://api.openai.com/v1/responses",
       { Authorization: `Bearer ${apiKey}` },
@@ -175,6 +177,8 @@ const openai = {
         reasoning: { effort: /luna/.test(model) ? "none" : "low" },
         max_output_tokens: 4000,
         store: false,
+        // Every JSON-asking prompt says "JSON", which json_object mode requires.
+        ...(json && { text: { format: { type: "json_object" } } }),
       }
     );
     if (!result.ok) {
@@ -194,6 +198,8 @@ const openai = {
 };
 
 /* ---------- Anthropic Claude ---------- */
+// No generic JSON mode here: structured outputs need a schema per call. The prompts ask for JSON
+// and the client's parser pulls the object out of any surrounding text.
 // Current-generation Claude models take output_config.effort; "low" keeps chat replies quick.
 const CLAUDE_GEN5 = /^claude-(fable|opus|sonnet|haiku)-5/;
 // Models that accept the server-side refusal fallback (Haiku has none).
@@ -254,7 +260,7 @@ const openrouter = {
   defaultModel: "openai/gpt-6-luna",
   suggestedModels: ["openai/gpt-6-luna", "anthropic/claude-haiku-5.5", "google/gemini-3.8-flash"],
   keyUrl: "https://openrouter.ai/settings/keys",
-  async chat({ messages, model, apiKey }) {
+  async chat({ messages, model, apiKey, json }) {
     const result = await postJson(
       "https://openrouter.ai/api/v1/chat/completions",
       { Authorization: `Bearer ${apiKey}`, "X-Title": "Charla" },
@@ -270,6 +276,7 @@ const openrouter = {
         })),
         reasoning: { effort: "low" },
         max_tokens: 4000,
+        ...(json && { response_format: { type: "json_object" } }),
       }
     );
     if (!result.ok) {

@@ -3,6 +3,7 @@ import crypto from "crypto";
 import pool from "./db.js";
 import { getSessionUser } from "./auth.js";
 import { PROVIDERS, DEFAULT_PROVIDER, ProviderError } from "./providers.js";
+import { rateLimit } from "./limits.js";
 
 const SERVER_GEMINI_KEY = process.env.GEMINI_API_KEY;
 
@@ -41,28 +42,40 @@ async function loadSettings(userId) {
   return { provider, models: settingRows[0]?.models || {}, keys };
 }
 
+// A key saved under a different KEY_ENCRYPTION_SECRET can't be decrypted. Say so plainly (as an
+// auth problem, so the client points to AI settings) instead of a generic upstream failure.
+function ownKeyFor(keys, provider) {
+  if (!keys[provider] || !CIPHER_KEY) return null;
+  try {
+    return decrypt(keys[provider].key_enc);
+  } catch {
+    throw new ProviderError("Your saved API key can't be read anymore. Remove it and add it again.", { status: 400, kind: "auth" });
+  }
+}
+
 // What /api/chat calls: the adapter, model, and key to use for this user's request.
+// shared: true when it's Charla's own key, the only case where hedged duplicate requests are ok.
 export async function resolveChatConfig(userId) {
   const { provider, models, keys } = await loadSettings(userId);
   const adapter = PROVIDERS[provider];
-  const ownKey = keys[provider] && CIPHER_KEY ? decrypt(keys[provider].key_enc) : null;
+  const ownKey = ownKeyFor(keys, provider);
   if (provider === DEFAULT_PROVIDER && !ownKey) {
     if (!SERVER_GEMINI_KEY) throw new ProviderError("Server is missing GEMINI_API_KEY", { status: 500 });
     // The shared free-tier key always runs the default model — its rate limits are per-model.
-    return { adapter, model: adapter.defaultModel, apiKey: SERVER_GEMINI_KEY };
+    return { adapter, model: adapter.defaultModel, apiKey: SERVER_GEMINI_KEY, shared: true };
   }
   if (!ownKey) throw new ProviderError("Server is missing KEY_ENCRYPTION_SECRET", { status: 500 });
-  return { adapter, model: models[provider] || adapter.defaultModel, apiKey: ownKey };
+  return { adapter, model: models[provider] || adapter.defaultModel, apiKey: ownKey, shared: false };
 }
 
 // Voice always runs on Gemini (it's the only provider with speech models wired in): the user's own
-// Gemini key if they saved one, otherwise the shared key. The real-time conversation streams the
-// learner's microphone to Google, so it's only offered when Gemini is their chosen provider — other
-// providers get the classic pipeline, where only the AI's reply text is sent to Google for speech.
+// Gemini key if they saved one, otherwise the shared key. The real-time conversation is a Gemini
+// model answering the learner directly, so it's only offered when Gemini is their chosen provider;
+// with any other provider, that provider writes the replies and Gemini only reads them aloud.
 export async function resolveVoiceConfig(userId) {
   const { provider, keys } = await loadSettings(userId);
   const gemini = PROVIDERS.gemini;
-  const ownKey = keys[gemini.id] && CIPHER_KEY ? decrypt(keys[gemini.id].key_enc) : null;
+  const ownKey = ownKeyFor(keys, gemini.id);
   return { apiKey: ownKey || SERVER_GEMINI_KEY, liveAllowed: provider === gemini.id, liveModel: gemini.liveModel };
 }
 
@@ -129,7 +142,8 @@ router.put("/settings", async (req, res) => {
 });
 
 // Body: { apiKey } — checks the key with the provider before storing it.
-router.put("/keys/:provider", async (req, res) => {
+// Each save makes an outbound call to check the key, so it gets a small budget too.
+router.put("/keys/:provider", rateLimit("keys", { burst: 10, perMinute: 3 }), async (req, res) => {
   const adapter = PROVIDERS[req.params.provider];
   if (!adapter) return res.status(400).json({ error: "Unknown provider" });
   if (!CIPHER_KEY) return res.status(500).json({ error: "Server is missing KEY_ENCRYPTION_SECRET" });

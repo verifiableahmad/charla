@@ -120,7 +120,8 @@ router.get("/me", async (req, res) => {
 
 router.post("/logout", async (req, res) => {
   const token = parseCookies(req)[SESSION_COOKIE];
-  if (token) await pool.query(`DELETE FROM sessions WHERE token = $1`, [token]);
+  // Clearing the cookie is what signs this browser out; a row the DB couldn't delete just expires.
+  if (token) await pool.query(`DELETE FROM sessions WHERE token = $1`, [token]).catch((err) => console.error(err));
   setCookie(res, SESSION_COOKIE, "", { expirePast: true });
   res.json({ ok: true });
 });

@@ -1,6 +1,8 @@
 import express from "express";
 import { getSessionUser } from "./auth.js";
 import { resolveVoiceConfig } from "./ai.js";
+import { ProviderError } from "./providers.js";
+import { rateLimit } from "./limits.js";
 
 // Gemini's prebuilt voices. Characters pick one; anything else falls back to the default.
 const VOICES = new Set(["Kore", "Puck", "Aoede", "Charon", "Leda", "Fenrir"]);
@@ -10,9 +12,36 @@ const TTS_MODEL = "gemini-3.8-flash-lite-tts";
 const TTS_FIRST_AUDIO_TIMEOUT_MS = 8000;
 
 // The free tier allows only a handful of TTS requests per day. Once a key is rate-limited, stop
-// calling upstream for a while so every 🔊 tap fails fast and the client uses the browser voice.
+// calling upstream for as long as Google asks (its RetryInfo), so every tap fails fast and the
+// client uses the browser voice, without sitting out longer than needed.
 const TTS_COOLDOWN_MS = 10 * 60000;
+function cooldownFrom(detail) {
+  try {
+    const delay = JSON.parse(detail).error?.details?.find((d) => d.retryDelay)?.retryDelay; // e.g. "37s"
+    const s = parseFloat(delay);
+    if (s > 0) return Math.min(Math.max(s * 1000, 15000), TTS_COOLDOWN_MS);
+  } catch {}
+  return TTS_COOLDOWN_MS;
+}
 const ttsBlockedUntil = new Map(); // apiKey → timestamp
+
+// Finished clips, shared by every learner: scene openers, replays and common lines are the same
+// audio for everyone, so each is only synthesized once per server. Map order doubles as LRU.
+// ~17 minutes of 24 kHz 16-bit audio by default; TTS_CACHE_MB tunes it to the instance's memory.
+const TTS_CACHE_MAX_BYTES = (Number(process.env.TTS_CACHE_MB) || 48) * 1024 * 1024;
+const ttsCache = new Map(); // `${voice}|${slow}|${text}` → Buffer
+let ttsCacheBytes = 0;
+
+function cacheClip(key, clip) {
+  if (clip.length > TTS_CACHE_MAX_BYTES / 8) return;
+  ttsCache.set(key, clip);
+  ttsCacheBytes += clip.length;
+  while (ttsCacheBytes > TTS_CACHE_MAX_BYTES) {
+    const [oldest, buf] = ttsCache.entries().next().value;
+    ttsCache.delete(oldest);
+    ttsCacheBytes -= buf.length;
+  }
+}
 
 const STYLES = {
   normal: "Warm and natural, speaking slowly and clearly to a beginner Spanish learner.",
@@ -30,17 +59,31 @@ router.use(async (req, res, next) => {
 
 // Body: { text, voice?, slow? } — streams back raw 16-bit mono PCM at 24 kHz as it's synthesized,
 // so playback starts on the first chunk instead of waiting for the whole clip.
-router.post("/tts", async (req, res) => {
+// A key that can't be decrypted is a settings problem, not a database one — say which.
+const configError = (res, err) => {
+  if (err instanceof ProviderError) return res.status(err.status).json({ error: err.message, kind: err.kind });
+  console.error(err);
+  return res.status(500).json({ error: "Database error" });
+};
+
+router.post("/tts", rateLimit("tts", { burst: 40, perMinute: 20 }), async (req, res) => {
   const text = typeof req.body.text === "string" ? req.body.text.trim() : "";
   if (!text || text.length > 800) return res.status(400).json({ error: "Text must be 1-800 characters" });
   const voice = VOICES.has(req.body.voice) ? req.body.voice : DEFAULT_VOICE;
+  const cacheKey = `${voice}|${!!req.body.slow}|${text}`;
+  const cached = ttsCache.get(cacheKey);
+  if (cached) {
+    ttsCache.delete(cacheKey);
+    ttsCache.set(cacheKey, cached); // refresh LRU position
+    res.writeHead(200, { "Content-Type": "audio/l16; rate=24000; channels=1", "Cache-Control": "no-store" });
+    return res.end(cached);
+  }
 
   let apiKey;
   try {
     ({ apiKey } = await resolveVoiceConfig(req.user.id));
   } catch (err) {
-    console.error(err);
-    return res.status(500).json({ error: "Database error" });
+    return configError(res, err);
   }
   if (!apiKey) return res.status(500).json({ error: "Server is missing GEMINI_API_KEY" });
   if ((ttsBlockedUntil.get(apiKey) || 0) > Date.now()) return res.status(503).json({ error: "Speech generation is rate-limited" });
@@ -69,13 +112,14 @@ router.post("/tts", async (req, res) => {
       clearTimeout(firstAudioTimer);
       const detail = await upstream.text().catch(() => "");
       console.warn(`TTS failed (${upstream.status}): ${detail.slice(0, 300)}`);
-      if (upstream.status === 429) ttsBlockedUntil.set(apiKey, Date.now() + TTS_COOLDOWN_MS);
+      if (upstream.status === 429) ttsBlockedUntil.set(apiKey, Date.now() + cooldownFrom(detail));
       return res.status(502).json({ error: "Speech generation failed" });
     }
 
     // Server-sent events; audio arrives as base64 PCM in step.delta events with delta.type "audio".
     const decoder = new TextDecoder();
     let buffer = "";
+    const clip = [];
     for await (const chunk of upstream.body) {
       buffer += decoder.decode(chunk, { stream: true }).replace(/\r/g, "");
       let end;
@@ -91,11 +135,14 @@ router.post("/tts", async (req, res) => {
           clearTimeout(firstAudioTimer);
           res.writeHead(200, { "Content-Type": "audio/l16; rate=24000; channels=1", "Cache-Control": "no-store" });
         }
-        res.write(Buffer.from(data.delta.data, "base64"));
+        const audio = Buffer.from(data.delta.data, "base64");
+        clip.push(audio);
+        res.write(audio);
       }
     }
     clearTimeout(firstAudioTimer);
     if (!res.headersSent) return res.status(502).json({ error: "Speech generation returned no audio" });
+    cacheClip(cacheKey, Buffer.concat(clip));
     res.end();
   } catch (err) {
     clearTimeout(firstAudioTimer);
@@ -112,7 +159,7 @@ router.post("/tts", async (req, res) => {
 // Body: { systemInstruction, voice? } — mints a single-use, short-lived token for one real-time
 // conversation. The browser then talks to Gemini Live directly (no audio relayed through this
 // server), and the token's locked setup means it can't be reused for a different model or prompt.
-router.post("/live", async (req, res) => {
+router.post("/live", rateLimit("live", { burst: 6, perMinute: 1 }), async (req, res) => {
   const systemInstruction = typeof req.body.systemInstruction === "string" ? req.body.systemInstruction : "";
   if (!systemInstruction || systemInstruction.length > 30000) return res.status(400).json({ error: "Invalid system instruction" });
   const voice = VOICES.has(req.body.voice) ? req.body.voice : DEFAULT_VOICE;
@@ -121,8 +168,7 @@ router.post("/live", async (req, res) => {
   try {
     config = await resolveVoiceConfig(req.user.id);
   } catch (err) {
-    console.error(err);
-    return res.status(500).json({ error: "Database error" });
+    return configError(res, err);
   }
   if (!config.liveAllowed) return res.status(403).json({ error: "Live voice is only available with Gemini", kind: "not-gemini" });
   if (!config.apiKey) return res.status(500).json({ error: "Server is missing GEMINI_API_KEY" });
