@@ -1,6 +1,6 @@
 /* ---------- Voice engine ----------
-   speak()       Gemini TTS streamed from /api/voice/tts — the same natural voice on every device —
-                 falling back to the browser's speechSynthesis if it fails or is slow.
+   speak()       Gemini TTS streamed from /api/voice/tts, falling back to the browser's
+                 speechSynthesis if it fails, is slow, or the shared key's small daily TTS quota is spent.
    LiveSession   Real-time spoken conversation with Gemini Live: mic → 16 kHz PCM → WebSocket,
                  reply audio streamed straight back. Used by Hablar when Gemini is the provider.
 ------------------------------------------- */
@@ -347,7 +347,8 @@ export class LiveSession {
       this.node.port.onmessage = (e) => {
         if (!this.talking) return;
         const msg = JSON.stringify({ realtimeInput: { audio: { data: toBase64(new Uint8Array(e.data)), mimeType: "audio/pcm;rate=16000" } } });
-        if (this.setupDone && !this.pending.length) this.ws.send(msg);
+        // The socket can close mid-turn (idle, token expiry); keep buffering until the reconnect.
+        if (this.setupDone && this.ws && !this.pending.length) this.ws.send(msg);
         else this.pending.push(msg);
       };
       // Some browsers only pull audio through a worklet that's connected onward — route it to a muted sink.
@@ -372,7 +373,7 @@ export class LiveSession {
     this.releaseMic();
     this.emit("talking", false);
     // Still connecting: flushPending() sends the buffered speech and the end marker once it's ready.
-    if (!this.setupDone || this.pending.length) return;
+    if (!this.setupDone || !this.ws || this.pending.length) return;
     // Tells Live the learner is done, so it answers now instead of waiting out the silence timer.
     this.ws.send(JSON.stringify({ realtimeInput: { audioStreamEnd: true } }));
     if (this.heardSpeech) this.emit("thinking");
