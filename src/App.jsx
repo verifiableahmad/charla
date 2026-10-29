@@ -1653,6 +1653,20 @@ Respond ONLY with JSON, no fences:\n{"starters":["2 short Spanish sentence start
         </div>
       )}
       <div className="scenes">
+        <div className="creator">
+          <div className="creatorTitle">{t("Crea tu escena", "Make your own scene")}</div>
+          <div className="creatorSub">{t("Cuéntanos la idea en una frase. Charla prepara el personaje, el objetivo y la primera frase.", "Describe the idea in a sentence. Charla sets up the character, the goal and the first line.")}</div>
+          <div className="creatorRow">
+            <input value={ideaText} onChange={e => setIdeaText(e.target.value)}
+                   onKeyDown={e => e.key === "Enter" && createScene()}
+                   aria-label={t("Idea para la escena", "Scene idea")}
+                   placeholder={t("Por ejemplo: una entrevista en una panadería", "For example: a job interview at a bakery")} />
+            <button className="sendBtn" onClick={createScene} disabled={creating || !ideaText.trim()} aria-label={t("Crear escena", "Create scene")}>
+              {creating ? "…" : <Icon name="sparkle" />}
+            </button>
+          </div>
+          {createError && <div className="creatorError">{t("No pude crear esa escena. Inténtalo otra vez.", "Couldn't create that scene. Try again.")}</div>}
+        </div>
         {[...SCENARIOS, ...customScenes].filter(sc => sc.id !== sceneDelete.pending?.id).map(sc => (
           <div key={sc.id} className="sceneWrap">
             <button className="scene" onClick={() => start(sc)}>
@@ -1673,20 +1687,6 @@ Respond ONLY with JSON, no fences:\n{"starters":["2 short Spanish sentence start
             )}
           </div>
         ))}
-        <div className="creator">
-          <div className="creatorTitle">{t("Crea tu escena", "Make your own scene")}</div>
-          <div className="creatorSub">{t("Cuéntanos la idea en una frase. Charla prepara el personaje, el objetivo y la primera frase.", "Describe the idea in a sentence. Charla sets up the character, the goal and the first line.")}</div>
-          <div className="creatorRow">
-            <input value={ideaText} onChange={e => setIdeaText(e.target.value)}
-                   onKeyDown={e => e.key === "Enter" && createScene()}
-                   aria-label={t("Idea para la escena", "Scene idea")}
-                   placeholder={t("Por ejemplo: una entrevista en una panadería", "For example: a job interview at a bakery")} />
-            <button className="sendBtn" onClick={createScene} disabled={creating || !ideaText.trim()} aria-label={t("Crear escena", "Create scene")}>
-              {creating ? "…" : <Icon name="sparkle" />}
-            </button>
-          </div>
-          {createError && <div className="creatorError">{t("No pude crear esa escena. Inténtalo otra vez.", "Couldn't create that scene. Try again.")}</div>}
-        </div>
       </div>
     </div>
   );
